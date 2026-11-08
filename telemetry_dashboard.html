@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>CanSat Live Telemetry</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, sans-serif;
+      background: #0c1220;
+      color: #e8eef8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 1.25rem; }
+    header {
+      max-width: 1100px;
+      margin: 0 auto 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    h1 { margin: 0; font-size: clamp(1.35rem, 5vw, 2rem); }
+    #status { color: #aab8cf; font-size: .9rem; }
+    #status::before {
+      content: "";
+      display: inline-block;
+      width: .55rem;
+      height: .55rem;
+      margin-right: .5rem;
+      border-radius: 50%;
+      background: #f0ad4e;
+    }
+    #status.connected::before { background: #43d19e; }
+    #status.error::before { background: #ff6b75; }
+    #readings {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+      gap: 1rem;
+    }
+    .reading {
+      min-width: 0;
+      padding: .8rem 1rem;
+      border: 1px solid #253149;
+      border-radius: 1rem;
+      background: #131d30;
+      box-shadow: 0 8px 24px #0003;
+    }
+    .reading h2 {
+      margin: 0;
+      color: #aab8cf;
+      font-size: .95rem;
+      font-weight: 600;
+    }
+    .value {
+      margin: .2rem 0 0;
+      font-size: clamp(1.4rem, 6vw, 2rem);
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }
+    .value span { color: #aab8cf; font-size: 1rem; font-weight: 500; }
+    #chart {
+      max-width: 1100px;
+      margin: 1rem auto 0;
+      padding: 1rem;
+      border: 1px solid #253149;
+      border-radius: 1rem;
+      background: #131d30;
+      box-shadow: 0 8px 24px #0003;
+    }
+    #legend { display: flex; flex-wrap: wrap; gap: .6rem 1rem; margin-bottom: .5rem; }
+    .legend-item { display: inline-flex; align-items: center; gap: .4rem; color: #c5d0e0; font-size: .9rem; }
+    .legend-swatch { width: .75rem; height: .75rem; border-radius: 50%; }
+    #scale-note { margin: 0 0 .4rem; color: #8d9bb2; font-size: .8rem; }
+    canvas { display: block; width: 100%; height: min(52vh, 360px); min-height: 220px; }
+    #empty {
+      max-width: 1100px;
+      margin: 3rem auto;
+      color: #aab8cf;
+      text-align: center;
+    }
+    @media (max-width: 480px) {
+      body { padding: .8rem; }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CanSat Live Telemetry</h1>
+    <div id="status">Connecting to dashboard...</div>
+  </header>
+  <main id="readings"></main>
+  <section id="chart" aria-label="Live telemetry graph">
+    <div id="legend"></div>
+    <p id="scale-note">Each line is scaled to its own recent range so values with different units remain visible.</p>
+    <canvas id="graph" aria-label="Combined live graph of all telemetry values"></canvas>
+  </section>
+  <p id="empty">Waiting for the first telemetry packet…</p>
+  <script>
+    const readings = document.querySelector("#readings");
+    const legend = document.querySelector("#legend");
+    const graph = document.querySelector("#graph");
+    const emptyMessage = document.querySelector("#empty");
+    const statusElement = document.querySelector("#status");
+    const history = [];
+    const maxPoints = 300;
+    const colors = ["#55d6be", "#74a7ff", "#ffba69", "#e78bff", "#ff7885"];
+    const fields = new Map();
+
+    function setStatus(message) {
+      statusElement.textContent = message;
+      statusElement.className = /connected/i.test(message) ? "connected" :
+        (/error|could not/i.test(message) ? "error" : "");
+    }
+
+    function addPacket(record) {
+      history.push(record);
+      if (history.length > maxPoints) history.shift();
+      emptyMessage.hidden = true;
+
+      for (const [name, sample] of Object.entries(record.values)) {
+        let field = fields.get(name);
+        if (!field) {
+          field = createField(name, fields.size);
+          fields.set(name, field);
+        }
+        field.latest = sample;
+        field.value.textContent = Number(sample.value).toLocaleString(undefined, {
+          maximumFractionDigits: 4
+        });
+        field.unit.textContent = sample.unit ? " " + sample.unit : "";
+      }
+      draw();
+    }
+
+    function createField(name, index) {
+      const card = document.createElement("section");
+      card.className = "reading";
+      const title = document.createElement("h2");
+      title.textContent = name;
+      const valueLine = document.createElement("div");
+      valueLine.className = "value";
+      const value = document.createElement("strong");
+      value.textContent = "—";
+      const unit = document.createElement("span");
+      valueLine.append(value, unit);
+      card.append(title, valueLine);
+      readings.append(card);
+
+      const legendItem = document.createElement("span");
+      legendItem.className = "legend-item";
+      const swatch = document.createElement("span");
+      swatch.className = "legend-swatch";
+      swatch.style.backgroundColor = colors[index % colors.length];
+      const legendLabel = document.createElement("span");
+      legendLabel.textContent = name;
+      legendItem.append(swatch, legendLabel);
+      legend.append(legendItem);
+
+      return { name, value, unit, latest: null, color: colors[index % colors.length] };
+    }
+
+    function draw() {
+      const bounds = graph.getBoundingClientRect();
+      if (!bounds.width) return;
+      const ratio = window.devicePixelRatio || 1;
+      graph.width = Math.round(bounds.width * ratio);
+      graph.height = Math.round(bounds.height * ratio);
+      const context = graph.getContext("2d");
+      context.scale(ratio, ratio);
+      const width = bounds.width;
+      const height = bounds.height;
+      const left = 8, right = 8, top = 10, bottom = 24;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const firstTime = history[0]?.timestamp ?? 0;
+      const lastTime = history[history.length - 1]?.timestamp ?? firstTime;
+      const timeRange = lastTime - firstTime || 1;
+      context.font = "11px system-ui, sans-serif";
+      context.lineWidth = 1;
+      context.strokeStyle = "#29364d";
+      for (let tick = 0; tick <= 4; tick++) {
+        const y = top + plotHeight * tick / 4;
+        context.beginPath();
+        context.moveTo(left, y);
+        context.lineTo(width - right, y);
+        context.stroke();
+      }
+      fields.forEach(field => {
+        const points = history
+          .filter(record => record.values[field.name] !== undefined)
+          .map(record => ({ time: record.timestamp, value: record.values[field.name].value }));
+        if (!points.length) return;
+
+        const values = points.map(point => point.value);
+        let min = Math.min(...values);
+        let max = Math.max(...values);
+        const spread = max - min || Math.max(Math.abs(max) * .1, 1);
+        min -= spread * .12;
+        max += spread * .12;
+
+        context.strokeStyle = field.color;
+        context.lineWidth = 2.5;
+        context.lineJoin = "round";
+        context.beginPath();
+        points.forEach((point, index) => {
+          const x = left + (point.time - firstTime) / timeRange * plotWidth;
+          const y = top + (max - point.value) / (max - min) * plotHeight;
+          if (index === 0) context.moveTo(x, y);
+          else context.lineTo(x, y);
+        });
+        context.stroke();
+      });
+      context.fillStyle = "#8d9bb2";
+      context.fillText("oldest", left, height - 4);
+      context.textAlign = "right";
+      context.fillText("now", width - right, height - 4);
+      context.textAlign = "left";
+    }
+
+    const events = new EventSource("/events");
+    events.addEventListener("history", event => {
+      const data = JSON.parse(event.data);
+      setStatus(data.status);
+      data.records.forEach(addPacket);
+    });
+    events.addEventListener("packet", event => addPacket(JSON.parse(event.data)));
+    events.addEventListener("status", event => setStatus(JSON.parse(event.data).status));
+    events.onopen = () => setStatus("Connected to dashboard; waiting for telemetry");
+    events.onerror = () => setStatus("Dashboard connection interrupted; reconnecting…");
+    window.addEventListener("resize", draw);
+  </script>
+</body>
+</html>
